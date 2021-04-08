@@ -1,29 +1,57 @@
+#####################
+## CONFIG:
+## BME280 via I2C - TEMP, PRESSURE, HUMIDITY in Cone
+## WS1080 Rain, Anemometer, Vane
+## Status LED x2 - 1 in Cone & 1 in remote
+## 64x128 OLED Screen via I2C
+## Remote board is ~14ft. elevation in my back alley - one day will be mounted at approx 30' with no obstructions
+## NodeMCU Board is connected via Cat5 DIY Patch Panel -> 50' CAT5 cable x2 + 14AWG wire for Status LED
+##### Future Adds:
+##### Light / Lightning / UV Sensor via I2C
+#####################
+## Pin Config ########
+## A0 - Wind Direction
+## D0 - 
+## D1 - SCL
+## D2 - SDA
+## D3 - 
+## D4 - 
+## D5 - Wind Speed
+## D6 - Rain Bucket
+## D7 - Status LED
+## D8 - 
+#####################
 esphome:
-  name: weatherstation
+  name: wx_station
   platform: ESP8266
   board: d1_mini
 
 wifi:
-  ssid: <wifi>
-  password: <password>
-
+  ssid: "<wifi_network>"
+  password: "<wifi_password>"
   manual_ip:
-    static_ip: 192.168.1.231    
-    gateway: 192.168.1.1
-    subnet: 255.255.0.0
+    static_ip: <static_ip> #53
+    gateway: <gateway_ip>
+    subnet: <subnet_ip>
+  ap:
+    ssid: "Wx Station Fallback Hotspot"
+    password: "<ap_password>"
+    ap_timeout: 5min #testing to improve connection 2/14/21
+  fast_connect: on  #testing to improve connection 2/14/21
+  
+captive_portal:
+
+logger:
 
 api:
-  password: <apipasswd>
+  password: "<api_password>"
   
 ota:
   safe_mode: True
-  password: <otapasswd>
-  
-logger:
+  password: "<ota_password>"
 
-dallas:
-    # pin D7
-  - pin: GPIO13
+i2c:
+  frequency: 100kHz #try for longer distance - currently works at 50' - 1 pair per 5v, Gnd, SDA, SCL
 
 sensor:
   - platform: pulse_counter
@@ -31,7 +59,7 @@ sensor:
       # pin D5
       number: GPIO14
       mode: INPUT_PULLUP
-    unit_of_measurement: 'm/s'
+    unit_of_measurement: 'mph' ##change to m/s if metric
     name: 'Wind sensor'
     icon: 'mdi:weather-windy'
     id: my_wind
@@ -39,26 +67,53 @@ sensor:
       rising_edge: DISABLE
       falling_edge: INCREMENT
     internal_filter: 50us
-    update_interval: 60s
+    update_interval: 15s 
     #rotations_per_sec = pulses/2/60
     #circ_m=0.09*2*3.14 = 0.5652
     #mps = 1.18*circ_m*rotations_per_sec  
     #mps = 1.18*0.5652/2/60 =0,0055578
     filters:
-      - multiply: 0.0055578
-      - sliding_window_moving_average:
-          window_size: 2
-          send_every: 1
+      # - multiply: 0.0055578 #use for m/s
+      # - multiply: 2.237 #m/s to mph
+      # - sliding_window_moving_average:
+      #     window_size: 4
+      #     send_every: 1
+      - multiply: 0.04973 #1.492mph switch to close 1/sec per spec, pulse/sec (/60/2)*1.492
+      # - multiply: 0.0124327986 #m/s * mph conversion
+
+  # - platform: template
+  #   id: wind_mph
+  #   name: 'Wind Speed'
+  #   icon: 'mdi:weather-windy'
+  #   filters:
+  #     - lambda: return (id(my_wind).raw_state) * 2.237;
       
+  # - platform: template
+  #   id: wind_knots
+  #   unit_of_measurement: 'knots'
+  #   name: "Wind Speed Knots"
+  #   lambda: return id(my_wind).state * 0.0055578 * 1.94384449
+
+  # - platform: template
+  #   id: dew_point_c
+  #   unit_of_measurement: "°F"
+  #   lambda: return x * (234.04 (log((id(bme280_humidity))) / 100.0) + ((17.625 * (id(bme280_temperature).raw_state)) / (243.04 + (id(bme280_temperature).raw_state))))) / (17.625 - log((id(bme280_humidity).raw_state / 100.0)) - ((17.625 * (id(bme280_temperature).raw_state))) / (243.04 + (id(bme280_temperature).raw_state)))))
+
+  # - platform: template
+  #   id: dew_point_f
+  #   name: 'Dew Point'
+  #   unit_of_measurement: "°F"
+
   - platform: pulse_counter
     pin: 
       # pin D6
       number: GPIO12
       mode: INPUT_PULLUP
-    unit_of_measurement: 'mm'
+    unit_of_measurement: 'in' ##change to mm if metric
     name: 'Rain gauge'
     icon: 'mdi:weather-rainy'
     id: my_rain
+    internal: true
     count_mode:
       rising_edge: DISABLE
       falling_edge: INCREMENT
@@ -68,32 +123,330 @@ sensor:
     #mm_per_bucket=0.2794
     #rain = buckets*0.2794
     filters:
-      - multiply: 0.2794
+  #    - multiply: 0.2794 #for mm
+      - multiply: 0.011 # to inches
+    accuracy_decimals: 3
 
   - platform: integration
-    name: "Total Daily Rain"
+    name: "Rainfall per min"
+    id: rain_per_min
+    time_unit: min
+    unit_of_measurement: 'in'
     sensor: my_rain
-    unit_of_measurement: 'mm'
-    id: my_total_rain
-    time_unit: h
+    
+  - platform: total_daily_energy
+    name: "Total Daily Rain"
+    power_id: my_rain
+    unit_of_measurement: 'in' ###change to mm if metric
     icon: 'mdi:weather-rainy'
-    # x60 To convert to aggregated rain amount (was 60)
+    # x60 To convert to aggregated rain amount
     filters:
       - multiply: 60
+
+# COMPLETE FOR WEATHER    
+  - platform: bme280
+    temperature:
+      name: "WxSta Temperature"
+      id: bme280_temperature
+      oversampling: 1x
+
+    pressure:
+      name: "WxSta Pressure"
+      id: bme280_pressure
+      oversampling: 1x
+      
+    humidity:
+      name: "WxSta Relative Humidity"
+      id: bme280_humidity
+      oversampling: 1x
+    address: 0x76
+    update_interval: 60s
+
+### ADD WIND DIRECTION
+  - platform: adc
+    id: adc_sensor
+    pin: A0
+    name: ADC
+    internal: true
+    update_interval: 90s
+    filters:
+      # - multiply: 3.3 ##built into Wemos
+      # - multiply: 0.0009775171   #1/1023
+    accuracy_decimals: 3 ##IMPORTANT to get resolution for resistance sensor
+
+
+### ADD WIND CARIDNAL DIRECTION
+### Your values may differ!
+# Direction -- Resistance -- ADC Voltage
+# N -- 3132Ω -- 0.79v
+# NE -- 1643Ω -- 0.47v
+# E -- 292Ω -- 0.10v
+# SE -- 602Ω -- 0.19v
+# S -- 974Ω -- 0.29v
+# SW -- 2372Ω -- 0.63v
+# W -- 3997Ω -- 0.94v
+# NW -- 3657Ω -- 0.88v
+  - platform: resistance
+    sensor: adc_sensor
+    id: resistance_sensor
+    configuration: DOWNSTREAM
+    resistor: 10kOhm
+    internal: true
+    name: Resistance Sensor
+    accuracy_decimals: 1
+    filters:
+      - heartbeat: 90s #thinking of increasing interval to plot better
+    on_value:
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 3100
+              below: 3200
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "N"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 0.0
+                
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 1600
+              below: 1700
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "NE"         
+            - sensor.template.publish:
+                id: wind_heading
+                state: 45.0            
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 250
+              below: 350
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "E"                
+            - sensor.template.publish:
+                id: wind_heading
+                state: 90.0          
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 550
+              below: 650
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "SE"    
+            - sensor.template.publish:
+                id: wind_heading
+                state: 135.0             
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 900
+              below: 1100
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "S"    
+            - sensor.template.publish:
+                id: wind_heading
+                state: 180.0            
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 2300
+              below: 2450
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "SW"    
+            - sensor.template.publish:
+                id: wind_heading
+                state: 225.0              
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 3900
+              below: 4100
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "W"    
+            - sensor.template.publish:
+                id: wind_heading
+                state: 270.0          
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 3500
+              below: 3800
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "NW"    
+            - sensor.template.publish:
+                id: wind_heading
+                state: 315.0
+
+  - platform: template
+    name: "Wind Heading"
+    id: wind_heading
+    unit_of_measurement: "°"
+  - platform: template
+    id: bme280_temp_f
+    internal: true
+    lambda: return id(bme280_temperature).state * (9.0/5.0) + 32.0;
+
+### ALREADY IN HOMEASSISTANT
+  # - platform: sun
+  #   name: Sun Elevation
+  #   type: elevation
+  #   update_interval: 120s
+
+  # - platform: sun
+  #   name: Sun Azimuth
+  #   type: azimuth
+  #   update_interval: 120s
+
+  # - platform: homeassistant
+  #   name: "Temperature F"
+  #   id: wxsta_temp_f
+  #   internal: true
+  #   entity_id: sensor.wxsta_temperature_2
+
+##################################
+### See https://gist.github.com/bassicrob/93fb0adc95261217fd4677dd7c34381c#file-wx-station-haconfiguration-yaml for HA Calculated Sensors
+##################################
+  - platform: homeassistant
+    name: "Wind 3mAvg"
+    id: wind_3m_avg
+    internal: true 
+    unit_of_measurement: "MPH"
+    entity_id: sensor.wx_sta_wind_stats  
     
-  - platform: dallas
-    address: 0x750517B15C1CFF28
-    name: 'Temperature air'
+  # - platform: homeassistant
+  #   name: "Wind 3mAvg"
+  #   id: wind_10m_avg
+  #   internal: true 
+  #   unit_of_measurement: "MPH"
+  #   entity_id: sensor.wx_sta_wind_10m_stats
+    
+  - platform: homeassistant
+    id: wind_60m_gust
+    internal: true 
+    unit_of_measurement: "MPH"
+    entity_id: sensor.wx_sta_wind_60m_stats    
+#######
+## ADD Beufort - To Do
+#######
+
+####### ALREADY IN HOMEASSISTANT
+# sun:
+#   latitude: 40.7152681
+#   longitude: -73.8736255
+#######
+
+text_sensor:
+  - platform: template
+    name: "Wind Cardinal Direction"
+    id: wind_dir_card
+
+####### ALREADY IN HOMEASSISTANT
+  # - platform: sun
+  #   name: Next Sunrise
+  #   type: sunrise
+  #   update_interval: 4h
+  # - platform: sun
+  #   name: Next Sunset
+  #   type: sunset
+  #   update_interval: 4h
+
+#### Added to test WiFi connectivity issues 2/14/21
+  - platform: wifi_info
+    ip_address:
+      name: Wx_sta IP Address
+    mac_address:
+      name: Wx_Sta Mac Wifi Address
+    
+output:
+  - platform: gpio
+    pin: D7
+    id: status_led_remote
+interval:
+  - interval: 30s
+    then:
+      - output.turn_on: status_led_remote
+      - delay: 150ms
+      - output.turn_off: status_led_remote
+  - interval: 60s
+    then:
+      - sensor.integration.reset: rain_per_min   
+  - interval: 5s
+    then:
+      - display.page.show_next: my_display
+      - component.update: my_display
+# binary_sensor:
+#   - platform: template
+#     id: heat_index
+
+#   - platform: template
+#     id: wind_chill
 
 # Enable time component to reset energy at midnight
 time:
-#  - platform: sntp
-#    id: my_time
   - platform: homeassistant
-    id: homeassistant_time
-    on_time:
-      - seconds: 0
-        minutes: 0
-        hours: 0
-        then:
-          - sensor.integration.reset: my_total_rain
+    id: my_time
+font:
+  - file: "fonts/OpenSans-Semibold.ttf"
+    id: big_font
+    size: 40
+  - file: "fonts/OpenSans-Semibold.ttf"
+    id: small_font
+    size: 20   
+  - file: "fonts/OpenSans-Semibold.ttf"
+    id: medium_font
+    size: 32    
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    id: my_display
+    #reset_pin: D0
+    update_interval: 5s
+    address: 0x3C
+    rotation: 180°
+    pages:
+      - id: page1
+        lambda: |-
+          it.printf(0, -14, id(big_font), "%.1f°F", id(bme280_temp_f).state);
+          it.printf(0, 20, id(big_font), "%.1f%%", id(bme280_humidity).state);
+      - id: page2
+        lambda: |-
+          it.printf(0, -14, id(big_font), "%.1f", id(wind_3m_avg).state);
+          it.printf(82, -6, id(small_font), "MPH");
+          it.printf(34, 21, id(big_font), "%s", id(wind_dir_card).state.c_str());
+      - id: page3
+        lambda: |-
+          it.printf(0, -10, id(medium_font), "%.1f", id(bme280_pressure).state);
+          it.printf(96, -6, id(small_font), "mb");
+          it.printf(0, 20, id(big_font), "%.1f", id(wind_60m_gust).state);
+          it.printf(82, 22, id(small_font), "Gust");
+          it.printf(82, 41, id(small_font), "MPH");          
+      - id: page4
+        lambda: |-
+          it.strftime(64, 1, id(big_font), TextAlign::TOP_CENTER, "%I:%M", id(my_time).now());
+
